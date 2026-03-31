@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  clickup-app:
+    build: .
+    image: clickup-streamlit
+    container_name: clickup-app
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    volumes:
+      - ./database_backup_csv:/app/database_backup_csv
