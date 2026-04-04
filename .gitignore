@@ -1,8 +1,11 @@
 .env
 *.env
+.venv/
+venv/
 token.pickle
 oauth_client.json
 service_account.json
 __pycache__/
 *.pyc
 database_backup_csv/
+database_backup_pg/

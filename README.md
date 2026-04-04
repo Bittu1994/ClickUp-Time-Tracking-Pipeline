@@ -21,18 +21,32 @@ This project:
 
 ## What’s in the repo
 
-- `database.py` — fetch tasks from ClickUp, normalize folder names, upsert into Postgres.
-- `main.py` — Streamlit app plus Excel generation (planned vs actual, productivity vs enjoyment buckets).
-- `weekly_summary.py` — monthly/weekly aggregation logic shared by the UI.
-- `webhook/` — optional Flask receiver + webhook registration for task events.
-- `tracked_time_update.py` — helper logic around ClickUp time entries where the stock flow was insufficient.
-- Docker + `docker-compose` for a repeatable local run.
+- `database.py` — fetch tasks from ClickUp, upsert into Postgres (durations from task dates such as start/due, not ClickUp’s paid Time Tracking API).
+- `folder_config.py` — folder name map, planned hours, productivity/enjoyment tags (single place to customize).
+- `main.py` — Streamlit app plus Excel generation (planned vs actual, productivity vs enjoyment buckets). In the report section, **export and Google Drive actions appear above the preview table**; the folder filter still applies to both the workbook and the table.
+- `weekly_summary.py` — monthly/weekly aggregation logic shared by the UI (parameterized SQL).
+- `webhook/` — optional Flask receiver (`webhook/app.py`) and launcher (`webhook/main.py`) for task events.
+- `tracked_time_update.py` — date-range sync from the ClickUp task API into Postgres (CSV snapshot before upsert), using the same duration rules as the full fetch.
+- `styling.py` — Excel formatting (including folder tag colors driven by `folder_config.py`).
+- Docker + `docker-compose` for a repeatable local run (Postgres client in the image for optional `pg_dump` backups).
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and PRs to `main` / `master`: `compileall` on the Python modules plus `python -m unittest discover -s tests` (no API keys required).
 
 ## Personalized setup note
 
 This project is personalized for my own workflow. Some parts are intentionally hardcoded (for example folder/category names, preferred order in reports, planned hours, tags, and fixed report date ranges). Lists are not fully dynamic by default.
 
-If you want to use it for your own personal workflow, update those variables to match your own ClickUp structure and reporting style.
+If you want to use it for your own personal workflow, start with **`folder_config.py`** and **`main.py`** (date ranges, folder order in Excel), plus **`styling.py`** for Excel colors.
+
+### Google Drive upload (OAuth)
+
+`google_auth.py` opens a **local browser** to build `token.pickle`. That flow usually fails inside Docker (redirect goes to your Mac’s `localhost`, not the container). Easiest path: run the OAuth step **once on the host** (venv + `python -c "from google_auth import get_user_credentials; get_user_credentials()"`), then ensure `token.pickle` and `oauth_client.json` are available to the app (mount a volume or copy into the image).
+
+### GitHub “Traffic” / clones
+
+GitHub does **not** show *who* cloned the repo. A spike in **clones** with few **unique visitors** often means `git clone`/API/automation (mirrors, scrapers, CI) rather than people clicking the repo page—it is not something you can attribute to “bots vs humans” from the dashboard alone.
 
 ## Local setup with `.env`
 
@@ -69,4 +83,24 @@ streamlit run main.py
 - Rotate any API key that was ever hardcoded in past commits.
 - Ensure `.env`, `oauth_client.json`, `service_account.json`, and `token.pickle` are not tracked.
 - If secrets were committed before, clean git history before publishing.
+
+### Database backups
+
+**CSV (table `clickup_mkiel` only)** — `database_backup_csv/`
+
+- **Full fetch** (`database.py`): CSV snapshot before sync.
+- **Range upsert** (`tracked_time_update`): CSV before upsert.
+- **Manual**: Streamlit CSV backup button, or `python database.py backup`.
+
+**pg_dump (whole database)** — `database_backup_pg/`, custom format (`.dump`)
+
+- Runs automatically after the CSV step on **full fetch** (if `pg_dump` is available). Set **`SKIP_PG_DUMP=1`** in `.env` to skip (e.g. no client tools on the host).
+- **Manual**: Streamlit pg_dump backup button, or `python database.py backup-pg`.
+- **Restore** (example; use your DB name and empty target or new DB):
+
+  ```bash
+  pg_restore -h localhost -p 5432 -U USER -d clickup --clean --if-exists path/to/clickup_YYYYMMDD_HHMMSS.dump
+  ```
+
+Docker image includes **`postgresql-client`** so `pg_dump` works in the container. Compose mounts **`./database_backup_pg`** like the CSV folder.
 

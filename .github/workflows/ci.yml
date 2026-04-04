@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Syntax check (project files only)
+        run: |
+          python -m compileall -q \
+            folder_config.py database.py main.py weekly_summary.py tracked_time_update.py \
+            styling.py drive_upload.py google_auth.py note_data.py update_sheet.py \
+            db_structure_inspector.py
+          python -m compileall -q webhook
+          python -m compileall -q update_existsing_tasks
+      - name: Unit tests (no API keys required)
+        run: python -m unittest discover -s tests -v

@@ -3,15 +3,13 @@ import psycopg2
 import pandas as pd
 import io
 import calendar
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import warnings
+import os
+
 from styling import get_formats
 from tracked_time_update import main as tracked_time_update
-from styling import get_formats  # import your external formats
-import os
-
-
-import os
+from folder_config import PLANNED_HOURS, FOLDER_TAGS
 
 
 # if "oauth_token_deleted" not in st.session_state:
@@ -22,7 +20,7 @@ import os
 
 # Range of exel months to waht date will the exel show 
 fixed_start_date = "2025-06-01"
-fixed_end_date = "2026-02-28"
+fixed_end_date = "2026-03-31"
 
 
 warnings.filterwarnings("ignore")
@@ -48,20 +46,6 @@ def check_connection_info():
     cur.close()
     conn.close()
     return dbname, user, schema
-
-
-def load_data(start_date, end_date):
-    conn = connect_db()
-    query = f"""
-    SELECT folder_name, task_start_date, duration
-    FROM clickup_mkiel
-    WHERE task_start_date >= '{start_date}' AND task_start_date <= '{end_date}'
-    ORDER BY task_start_date
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    df["task_start_date"] = pd.to_datetime(df["task_start_date"])
-    return df
 
 
 def time_str_to_hours(time_str):
@@ -437,62 +421,10 @@ def create_all_folders_daily_summary_excel(writer, df, start_date, end_date):
             summary_start_row + 1, 3, "Difference", f["summary_header_format"]
         )
 
-        planned_times = {
-            "comarchactualwork": 60,
-            "programmingprojects": 20,
-            "improvement": 15,
-            "cooking": 20,
-            "guitar": 15,
-            "audiobook": 10,
-            "book": 10,
-            "joblookingcv": 15,
-            "fitual": 10,
-            "finance": 10,
-            "gymsports": 20,
-            "mastersdegree": 15,
-            
-            
-            "lovelifetinder": 10,
-            
-            "tvshows": 10,
-            "computergames": 30,
-            "sociallife": 50,
-            "familysociallife": 30,
-            "painting": 10,
-            "carpentering": 10,
-        }
-
-        # Folder tags (ONLY NEW LOGIC)
-        FOLDER_TAGS = {
-            "comarchactualwork": {"productivity"},
-            "programmingprojects": {"productivity"},
-            "improvement": {"productivity"},
-            "cooking": {"productivity"},
-            "guitar": {"productivity"},
-            "audiobook": {"productivity"},
-            "book": {"productivity"},
-            "joblookingcv": {"productivity"},
-            "fitual": {"productivity"},
-            "finance": {"productivity"},
-            "gymsports": {"productivity"},
-            "mastersdegree": {"productivity"},
-        
-
-            "lovelifetinder": {"enjoyment"},
-            
-            "tvshows": {"enjoyment"},
-            "computergames": {"enjoyment"},
-            "sociallife": {"enjoyment"},
-            "familysociallife": {"enjoyment"},
-            "painting": {"productivity"},
-            "carpentering": {"productivity"},
-            
-        }
-
         # After the loop writing folder rows (UNCHANGED)
         for i, folder in enumerate(folders):
             row = summary_start_row + 2 + i
-            planned = planned_times.get(folder.lower(), 0)
+            planned = PLANNED_HOURS.get(folder.lower(), 0)
 
             df["task_start_date"] = pd.to_datetime(df["task_start_date"])
             df_month = df[
@@ -509,19 +441,26 @@ def create_all_folders_daily_summary_excel(writer, df, start_date, end_date):
             diff = actual - planned
             diff_str = hours_to_hm(diff)
 
-            worksheet.write(row, 0, folder.capitalize(), f["summary_cell_format"])
-            worksheet.write(row, 1, planned, f["summary_cell_format"])
-            worksheet.write(row, 2, actual_str, f["summary_cell_format"])
+            tags = FOLDER_TAGS.get(folder.lower(), set())
+            if "productivity" in tags:
+                row_fmt = f["summary_row_productivity"]
+                neg_fmt = f["summary_row_productivity_negative_diff"]
+            elif "enjoyment" in tags:
+                row_fmt = f["summary_row_enjoyment"]
+                neg_fmt = f["summary_row_enjoyment_negative_diff"]
+            else:
+                row_fmt = f["summary_cell_format"]
+                neg_fmt = f["summary_negative_diff_format"]
 
-            diff_fmt = (
-                f["summary_negative_diff_format"]
-                if diff < 0
-                else f["summary_cell_format"]
-            )
+            worksheet.write(row, 0, folder.capitalize(), row_fmt)
+            worksheet.write(row, 1, planned, row_fmt)
+            worksheet.write(row, 2, actual_str, row_fmt)
+
+            diff_fmt = neg_fmt if diff < 0 else row_fmt
             worksheet.write(row, 3, diff_str, diff_fmt)
 
         # === Calculate totals for "All" row ===
-        total_planned = sum(planned_times.get(folder.lower(), 0) for folder in folders)
+        total_planned = sum(PLANNED_HOURS.get(folder.lower(), 0) for folder in folders)
 
         df["task_start_date"] = pd.to_datetime(df["task_start_date"])
         df_month = df[
@@ -555,7 +494,7 @@ def create_all_folders_daily_summary_excel(writer, df, start_date, end_date):
 
         for folder in folders:
             key = folder.lower()
-            planned = planned_times.get(key, 0)
+            planned = PLANNED_HOURS.get(key, 0)
 
             folder_df = df_month[df_month["folder_name"].str.lower() == key]
             actual = folder_df["duration"].sum() / (1000 * 60 * 60)
@@ -628,51 +567,125 @@ def create_complex_weekly_excel(writer, df):
 # --- Streamlit UI ---
 
 st.set_page_config(
-    page_title="ClickUp Time Entries - 2025",
+    page_title="ClickUp time & reports",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📊 ClickUp Time Entries Report — 2025")
+st.title("ClickUp time & reports")
 
 dbname, user, schema = check_connection_info()
-st.markdown(
-    f"**Connected to database:** `{dbname}`  \n**User:** `{user}`  \n**Schema:** `{schema}`"
+with st.container():
+    c_db1, c_db2, c_db3 = st.columns((1.2, 1, 1))
+    with c_db1:
+        st.metric(label="Postgres database", value=dbname)
+    with c_db2:
+        st.metric(label="DB user", value=user)
+    with c_db3:
+        st.metric(label="Schema", value=schema)
+
+from database import (
+    backup_clickup_mkiel_to_csv,
+    backup_database_pg_dump,
+    main as fetch_and_store_data,
 )
 
-from database import main as fetch_and_store_data
+st.divider()
+st.subheader("Sync from ClickUp → Postgres")
+st.info(
+    "**Range sync** — tasks **created** between the dates below (quick). "
+    "**Full workspace sync** — every list (slower). "
+    "Duration stored is **due − start** (not ClickUp time tracking). "
+    "For the table below, you usually only need **one** sync."
+)
 
-st.markdown("## Select Date Range for Auto Time Tracking")
+_range_end_default = date.today()
+_range_start_default = _range_end_default - timedelta(days=7)
 
-default_start = datetime(2026, 1, 1)
-default_end = datetime(2026, 1, 7)
+dc1, dc2 = st.columns(2)
+with dc1:
+    range_start = st.date_input("Start date (range sync)", value=_range_start_default)
+with dc2:
+    range_end = st.date_input("End date (range sync)", value=_range_end_default)
 
-range_start = st.date_input("Start Date", value=default_start)
-range_end = st.date_input("End Date", value=default_end)
+bs1, bs2 = st.columns(2)
+with bs1:
+    range_clicked = st.button(
+        "Range sync → Postgres",
+        type="primary",
+        use_container_width=True,
+        help="Upsert tasks created in the date range above.",
+        key="btn_range_sync",
+    )
+with bs2:
+    full_clicked = st.button(
+        "Full workspace sync → Postgres",
+        type="primary",
+        use_container_width=True,
+        help="Reload all tasks from all lists (CSV + optional pg_dump, then upsert).",
+        key="btn_full_sync",
+    )
 
-if st.button("🕒 Auto Add Time Tracking (Based on Start–Due Date)"):
-    print("Button '🕒 Auto Add Time Tracking' clicked")
+if range_clicked:
+    print("Button range-sync clicked")
     if range_start > range_end:
-        st.error("❌ Start date must be before end date.")
+        st.error("Start date must be on or before end date.")
     else:
-        with st.spinner(f"Running time tracking from {range_start} to {range_end}..."):
-            from datetime import datetime  # In case it's not imported already
-
+        with st.spinner(f"Range sync: {range_start} → {range_end}…"):
             tracked_time_update(
                 datetime.combine(range_start, datetime.min.time()),
                 datetime.combine(range_end, datetime.max.time()),
             )
-        st.success("✅ Time tracking completed successfully!")
+        st.success("Range sync finished.")
 
-
-if st.button("🔄 Fetch & Update Data from ClickUp API"):
-    print("Button '🔄 Fetch & Update Data from ClickUp API' clicked")
-    with st.spinner("Fetching data and updating database..."):
+if full_clicked:
+    print("Button full-workspace-sync clicked")
+    with st.spinner("Full workspace sync (this can take a while)…"):
         fetch_and_store_data()
-        st.success("✅ Data fetched and updated successfully!")
+    st.success("Full workspace sync finished.")
+
+st.divider()
+st.subheader("Backups")
+st.caption("Optional snapshots · `database_backup_csv/` · `database_backup_pg/`")
+
+bb1, bb2 = st.columns(2)
+with bb1:
+    csv_backup_clicked = st.button(
+        "Export table **clickup_mkiel** to CSV",
+        use_container_width=True,
+        key="btn_csv_backup",
+    )
+with bb2:
+    pg_backup_clicked = st.button(
+        "Full database backup (pg_dump)",
+        use_container_width=True,
+        key="btn_pg_backup",
+    )
+
+if csv_backup_clicked:
+    try:
+        with st.spinner("Writing CSV…"):
+            path = backup_clickup_mkiel_to_csv()
+        st.success(f"CSV saved: `{path}`")
+    except Exception as e:
+        st.error(f"CSV backup failed: {e}")
+
+if pg_backup_clicked:
+    try:
+        with st.spinner("Running pg_dump…"):
+            path = backup_database_pg_dump()
+        st.success(
+            f"pg_dump saved: `{path}`  \n\nRestore example: "
+            f"`pg_restore -h HOST -U USER -d DBNAME --clean --if-exists \"{path}\"`"
+        )
+    except Exception as e:
+        st.error(f"pg_dump failed: {e}")
 
 # fixed_start_date = "2025-06-01"
 # fixed_end_date = "2025-11-30"
+
+st.divider()
+st.subheader("Report & export")
 
 try:
     df = load_data(fixed_start_date, fixed_end_date)
@@ -681,23 +694,23 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.info(
-        f"No data found between {fixed_start_date} and {fixed_end_date}. Please fetch data first."
+    st.warning(
+        f"No rows in **clickup_mkiel** between **{fixed_start_date}** and **{fixed_end_date}**. "
+        "Run a sync above, or widen `fixed_start_date` / `fixed_end_date` in code."
     )
 else:
     df["Formatted Duration"] = df["duration"].apply(format_duration)
     folder_options = sorted(df["folder_name"].dropna().unique())
 
-    selected_folder = st.selectbox("Filter by Folder", ["All"] + folder_options)
+    selected_folder = st.selectbox(
+        "Folder filter",
+        ["All"] + folder_options,
+        help="Restrict the table and Excel to one folder, or All.",
+    )
 
     filtered_df = df.copy()
     if selected_folder != "All":
         filtered_df = filtered_df[filtered_df["folder_name"] == selected_folder]
-
-    st.markdown(
-        f"### Displaying entries for **{selected_folder}** from **{fixed_start_date}** to **{fixed_end_date}**"
-    )
-    st.dataframe(filtered_df[["folder_name", "task_start_date", "Formatted Duration"]])
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -707,46 +720,62 @@ else:
         )
     output.seek(0)
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-            if st.download_button(
-                label="📥 Download Excel Report",
-                data=output,
-                file_name="habbit_tracker.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ):
-                print("Button '📥 Download Excel Report' clicked")
-
-    with col2:
-        uploaded_file = st.file_uploader(
-            "if you click it will work but you can upload new as well",
-            type=["xlsx"],
+    st.markdown("##### Excel & Google Drive")
+    st.caption("Uses the **folder filter** above for the generated workbook.")
+    ex1, ex2 = st.columns(2, gap="large")
+    with ex1:
+        st.download_button(
+            label="Download Excel report",
+            data=output,
+            file_name="habbit_tracker.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary",
+            key="download_excel_report",
         )
-    
-        if st.button("📤 Upload & Convert to Google Sheets"):
-                print("Button '📤 Upload & Convert to Google Sheets' clicked")
-                try:
-                    from drive_upload import upload_excel_and_convert
-                    import io
+    with ex2:
+        uploaded_file = st.file_uploader(
+            "Or pick an .xlsx to upload (optional)",
+            type=["xlsx"],
+            help="If empty, upload uses the same workbook as Download (current filter).",
+            key="upload_xlsx_optional",
+        )
+        if st.button(
+            "Upload to Google Drive (convert to Sheet)",
+            use_container_width=True,
+            key="btn_upload_gdrive",
+        ):
+            print("Button upload-to-sheets clicked")
+            try:
+                from drive_upload import upload_excel_and_convert
 
-                    if uploaded_file is not None:
-                        excel_bytes = uploaded_file.read()
-                        filename = uploaded_file.name
-                    else:
-                        output.seek(0)                 # IMPORTANT
-                        excel_bytes = output.getvalue()
-                        filename = "habbit_tracker.xlsx"
+                if uploaded_file is not None:
+                    excel_bytes = uploaded_file.read()
+                    filename = uploaded_file.name
+                else:
+                    output.seek(0)
+                    excel_bytes = output.getvalue()
+                    filename = "habbit_tracker.xlsx"
 
-                    link = upload_excel_and_convert(
-                        io.BytesIO(excel_bytes),
-                        filename,
-                        "1We1WUYqriSpew672xGV-CBkFZK5CgIEB",  # 👈 YOUR DRIVE FOLDER ID
-                    )
+                link = upload_excel_and_convert(
+                    io.BytesIO(excel_bytes),
+                    filename,
+                    "1We1WUYqriSpew672xGV-CBkFZK5CgIEB",
+                )
 
-                    st.success("✅ Uploaded & converted via Google Drive")
-                    st.markdown(f"[Open Google Sheet]({link})")
-                except Exception as e:
-                    st.error(f"Upload failed: {e}")
-   
+                st.success("Uploaded and converted.")
+                st.markdown(f"[Open in Google Sheets]({link})")
+            except Exception as e:
+                st.error(f"Upload failed: {e}")
+
+    st.divider()
+    st.markdown(
+        f"**{selected_folder}** · **{fixed_start_date}** → **{fixed_end_date}** · "
+        f"{len(filtered_df)} row(s)"
+    )
+    st.dataframe(
+        filtered_df[["folder_name", "task_start_date", "Formatted Duration"]],
+        use_container_width=True,
+        hide_index=True,
+    )
 

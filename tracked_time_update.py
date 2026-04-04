@@ -1,6 +1,14 @@
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
+
+from database import (
+    backup_table_to_csv,
+    connect_db,
+    create_tables_if_not_exists,
+    insert_entries_to_db,
+)
+from folder_config import map_folder_name_from_task
 
 CLICKUP_TOKEN = os.getenv("CLICKUP_API_KEY")
 if not CLICKUP_TOKEN:
@@ -68,38 +76,6 @@ def get_tasks_from_list(list_id, due_date_gt=None, due_date_lt=None):
     return tasks
 
 
-def get_time_tracked(task_id, task_name):
-    url = f"https://api.clickup.com/api/v2/task/{task_id}/time"
-    resp = requests.get(url, headers=HEADERS)
-    if resp.ok:
-        data = resp.json()
-        total_time = sum(entry.get("time", 0) for entry in data.get("data", []))
-        return total_time
-    else:
-        print(
-            f"[ERROR] Failed to fetch time tracked for task '{task_name}' (ID: {task_id}): {resp.status_code}"
-        )
-        return 0
-
-
-def add_time_tracked(task_id, start_ms, end_ms, task_name):
-    url = f"https://api.clickup.com/api/v2/task/{task_id}/time"
-    duration_ms = end_ms - start_ms
-    payload = {
-        "start": start_ms,
-        "end": end_ms,
-        "duration": duration_ms,
-        "description": "Auto time tracked based on start and due date difference",
-    }
-    resp = requests.post(url, json=payload, headers=HEADERS)
-    if resp.ok:
-        print(f"[INFO] Added time tracked to task '{task_name}' (ID: {task_id})")
-    else:
-        print(
-            f"[ERROR] Failed to add time tracked for task '{task_name}' (ID: {task_id}): {resp.status_code} {resp.text}"
-        )
-
-
 def ms_to_hm(ms):
     total_minutes = ms // (1000 * 60)
     hours = total_minutes // 60
@@ -108,7 +84,11 @@ def ms_to_hm(ms):
 
 
 def main(range_start: datetime, range_end: datetime):
-
+    """
+    For tasks in the date range with start+due set, compute duration = due - start
+    and upsert into Postgres (clickup_mkiel). Does not use ClickUp Time Tracking API
+    (paid / rate-limited); your reports read from the local DB.
+    """
     range_start_ms = int(range_start.timestamp() * 1000)
     range_end_ms = int(range_end.timestamp() * 1000)
     print("[INFO] Fetching all spaces...")
@@ -131,7 +111,6 @@ def main(range_start: datetime, range_end: datetime):
         for lst in lists:
             list_id = lst["id"]
             print(f"[INFO] Fetching tasks from list: {lst['name']} ({list_id})")
-            # Pass date range to filter tasks fetched
             tasks = get_tasks_from_list(
                 list_id, due_date_gt=range_start_ms, due_date_lt=range_end_ms
             )
@@ -139,6 +118,7 @@ def main(range_start: datetime, range_end: datetime):
 
     print(f"[INFO] Total tasks fetched: {len(all_tasks)}")
 
+    entries = []
     for task in all_tasks:
         task_id = task["id"]
         task_name = task.get("name", "<No Name>")
@@ -193,26 +173,47 @@ def main(range_start: datetime, range_end: datetime):
             )
             continue
 
-        time_tracked = get_time_tracked(task_id, task_name)
-        if time_tracked > 0:
-            continue
-
         diff_ms = due_date - start_date
         diff_hours = diff_ms / (1000 * 60 * 60)
 
-        if 0 < diff_hours <= 24:
-            add_time_tracked(task_id, start_date, due_date, task_name)
-            start_dt = datetime.fromtimestamp(start_date / 1000)
-            due_dt = datetime.fromtimestamp(due_date / 1000)
-            added_time_str = ms_to_hm(diff_ms)
-            print(
-                f"[ADDED] Task: '{task_name}' (ID: {task_id}) | Start: {start_dt} | Due: {due_dt} | Added Time: {added_time_str}"
-            )
-        else:
+        if not (0 < diff_hours <= 24):
             print(
                 f"[INFO] Task '{task_name}' (ID: {task_id}) duration {diff_hours:.2f}h not in (0,24] hours, skipping."
             )
+            continue
+
+        task_start_date = datetime.fromtimestamp(start_date / 1000).date()
+        folder_name = map_folder_name_from_task(task)
+        entries.append(
+            {
+                "task_id": str(task_id),
+                "folder_name": folder_name,
+                "task_start_date": task_start_date,
+                "duration": diff_ms,
+            }
+        )
+        start_dt = datetime.fromtimestamp(start_date / 1000)
+        due_dt = datetime.fromtimestamp(due_date / 1000)
+        print(
+            f"[DB] Task: '{task_name}' (ID: {task_id}) | Start: {start_dt} | Due: {due_dt} | Duration: {ms_to_hm(diff_ms)}"
+        )
+
+    if not entries:
+        print("[INFO] No rows to upsert.")
+        return
+
+    conn = connect_db()
+    try:
+        create_tables_if_not_exists(conn)
+        backup_table_to_csv(conn, "clickup_mkiel")
+        insert_entries_to_db(conn, entries)
+    finally:
+        conn.close()
+    print(f"[INFO] Upserted {len(entries)} row(s) into clickup_mkiel.")
 
 
 if __name__ == "__main__":
-    main()
+    main(
+        datetime(2026, 1, 1, 0, 0, 0),
+        datetime(2026, 1, 7, 23, 59, 59),
+    )

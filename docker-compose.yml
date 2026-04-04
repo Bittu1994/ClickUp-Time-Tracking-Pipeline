@@ -11,3 +11,4 @@ services:
     restart: unless-stopped
     volumes:
       - ./database_backup_csv:/app/database_backup_csv
+      - ./database_backup_pg:/app/database_backup_pg

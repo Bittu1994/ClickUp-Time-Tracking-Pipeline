@@ -40,6 +40,22 @@ def get_formats(workbook):
         {"border": 1, "align": "center", "font_color": "red"}
     )
 
+    # Summary "All Folders Daily" folder rows — productivity (green) vs enjoyment (rose)
+    # Productivity: soft mint / Excel-style green tint, readable with black text
+    formats["summary_row_productivity"] = workbook.add_format(
+        {"border": 1, "align": "center", "bg_color": "#E2EFDA"}
+    )
+    formats["summary_row_productivity_negative_diff"] = workbook.add_format(
+        {"border": 1, "align": "center", "bg_color": "#E2EFDA", "font_color": "#C00000"}
+    )
+    # Enjoyment: light rose (distinct from productivity, not harsh red)
+    formats["summary_row_enjoyment"] = workbook.add_format(
+        {"border": 1, "align": "center", "bg_color": "#FCE4EC"}
+    )
+    formats["summary_row_enjoyment_negative_diff"] = workbook.add_format(
+        {"border": 1, "align": "center", "bg_color": "#FCE4EC", "font_color": "#C00000"}
+    )
+
     formats["red_left_border_format_week_sumary_row1"] = workbook.add_format(
         {
             "border": 1,

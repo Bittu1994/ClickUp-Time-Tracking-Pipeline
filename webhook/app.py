@@ -1,6 +1,16 @@
 from flask import Flask, request, jsonify
 import requests
 import os
+import sys
+from pathlib import Path
+from datetime import datetime
+
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+from database import connect_db, create_tables_if_not_exists, insert_entries_to_db
+from folder_config import map_folder_name_from_task
 
 app = Flask(__name__)
 
@@ -24,28 +34,28 @@ def get_task_details(task_id):
         return None
 
 
-def add_time_tracked(task_id, start_ms, end_ms):
-    url = f"https://api.clickup.com/api/v2/task/{task_id}/time"
-    headers = {"Authorization": CLICKUP_TOKEN, "Content-Type": "application/json"}
+def upsert_duration_to_local_db(task_id, task_details, start_ms, end_ms):
+    """Store duration (due - start) in clickup_mkiel; no ClickUp Time Tracking API."""
     duration_ms = end_ms - start_ms
-    payload = {
-        "start": start_ms,
-        "end": end_ms,
+    hours = duration_ms / (1000 * 60 * 60)
+    if not (0 < hours <= 24):
+        print(f"[INFO] Task {task_id} duration {hours:.2f}h out of range, skip DB.")
+        return True
+    task_start_date = datetime.fromtimestamp(start_ms / 1000).date()
+    entry = {
+        "task_id": str(task_id),
+        "folder_name": map_folder_name_from_task(task_details),
+        "task_start_date": task_start_date,
         "duration": duration_ms,
-        "billable": True,
-        "description": "Auto time tracked based on start and due date difference",
     }
+    conn = connect_db()
     try:
-        r = requests.post(url, json=payload, headers=headers)
-        if r.ok:
-            print(f"[INFO] Added time tracked to task {task_id}")
-            return True
-        else:
-            print(f"[ERROR] Failed to add time tracked: {r.status_code} {r.text}")
-            return False
-    except Exception as e:
-        print(f"[ERROR] Exception during add_time_tracked: {e}")
-        return False
+        create_tables_if_not_exists(conn)
+        insert_entries_to_db(conn, [entry])
+    finally:
+        conn.close()
+    print(f"[INFO] Upserted task {task_id} into clickup_mkiel")
+    return True
 
 
 @app.route("/webhook", methods=["POST", "GET"])
@@ -73,7 +83,6 @@ def webhook():
                 print("[WARNING] No task_id found in webhook data.")
                 return jsonify({"status": "no task_id"}), 400
 
-            # Fetch full task details from ClickUp API
             task_details = get_task_details(task_id)
             if not task_details:
                 return jsonify({"status": "failed to fetch task details"}), 500
@@ -98,10 +107,8 @@ def webhook():
             hours = diff_ms / (1000 * 60 * 60)
             print(f"[INFO] Task {task_id} start and due difference: {hours:.2f} hours")
 
-            if 0 < hours < 24:
-                added = add_time_tracked(task_id, start_date, due_date)
-                if not added:
-                    return jsonify({"status": "failed to add time tracked"}), 500
+            if 0 < hours <= 24:
+                upsert_duration_to_local_db(task_id, task_details, start_date, due_date)
 
     except Exception as e:
         print(f"[ERROR] Exception when handling webhook event: {e}")

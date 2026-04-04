@@ -1,8 +1,10 @@
 from db import setup_db
 from clickup_api import register_webhook
 import subprocess
+import sys
 import time
 import requests
+from pathlib import Path
 
 
 def wait_for_ngrok(timeout=2):
@@ -27,4 +29,6 @@ if wait_for_ngrok():
 else:
     print("⚠️ Skipping webhook registration.")
 
-subprocess.run(["python", "/Users/mkiel/Desktop/click_up_api/webhook/ app.py"])
+_webhook_dir = Path(__file__).resolve().parent
+_app = _webhook_dir / "app.py"
+subprocess.run([sys.executable, str(_app)], cwd=str(_webhook_dir.parent))

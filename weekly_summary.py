@@ -25,13 +25,13 @@ def connect_db():
 
 def load_data(start_date, end_date):
     conn = connect_db()
-    query = f"""
+    query = """
     SELECT folder_name, task_start_date, duration
     FROM clickup_mkiel
-    WHERE task_start_date >= '{start_date}' AND task_start_date <= '{end_date}'
+    WHERE task_start_date >= %s AND task_start_date <= %s
     ORDER BY task_start_date
     """
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params=[start_date, end_date])
     conn.close()
     df["task_start_date"] = pd.to_datetime(df["task_start_date"])
 
