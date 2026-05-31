@@ -1,51 +1,201 @@
-#!/usr/bin/env python3
-"""Simple script: take a local Excel file (first sheet) and POST it as CSV to an Apps Script URL.
+import gspread
 
-Usage:
-    python update_sheet.py /path/to/file.xlsx https://script.google.com/macros/s/AKfy.../exec
+from oauth2client.service_account import ServiceAccountCredentials
 
-Requirements: requests, pandas, openpyxl
-    pip install requests pandas openpyxl
-
-This is intentionally minimal and assumes the Excel file is valid .xlsx and the Apps Script endpoint
-accepts a POST with Content-Type: text/csv and writes it into the spreadsheet.
-"""
-import sys
-import io
 import pandas as pd
+
 import requests
 
+import zipfile
 
-def excel_first_sheet_to_csv_text(path):
-    xls = pd.ExcelFile(path)
-    sheet = xls.sheet_names[0]
-    df = xls.parse(sheet, dtype=str).fillna("")
-    return df.to_csv(index=False)
+import io
+
+from datetime import datetime, timedelta
+
+import os
+
+import json
 
 
-def post_csv(apps_url, csv_text):
-    headers = {"Content-Type": "text/csv; charset=utf-8"}
-    resp = requests.post(apps_url, data=csv_text.encode("utf-8"), headers=headers, timeout=30)
-    resp.raise_for_status()
+
+# 1. Credentials Setup
+
+creds_json = os.environ.get('GCP_CREDENTIALS')
+
+if not creds_json:
+
+    print("CRITICAL: GCP_CREDENTIALS secret missing!")
+
+    exit(1)
+
+
+
+creds_dict = json.loads(creds_json)
+
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+
+client = gspread.authorize(creds)
+
+
+
+# ⚠️ अपनी गूगल शीट की ID यहाँ डालें
+
+spreadsheet_id = "1pMMM8qBuDtV5mIE7dDYZSxPorZSeAqwsw5gUQdmqQGk" 
+
+worksheet = client.open_by_key(spreadsheet_id).worksheet("Top 250 Stocks")
+
+
+
+# 2. NSE Data Fetcher (TURNOVER LOGIC)
+
+def fetch_bhavcopy_for_date(date_obj):
+
+    date_str = date_obj.strftime("%Y%m%d")
+
+    url = f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date_str}_F_0000.csv.zip"
+
+    
+
+    headers = {
+
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+
+    }
+
+    
+
     try:
-        return resp.json()
-    except Exception:
-        return resp.text
+
+        response = requests.get(url, headers=headers, timeout=20)
+
+        
+
+        if response.status_code == 200:
+
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+
+                csv_filename = z.namelist()[0]
+
+                with z.open(csv_filename) as f:
+
+                    df = pd.read_csv(f)
+
+                    
+
+                    df.columns = [c.strip() for c in df.columns]
+
+                    
+
+                    sym_col = next((c for c in ['TckrSymb', 'SYMBOL'] if c in df.columns), None)
+
+                    close_col = next((c for c in ['ClsPric', 'CLOSE'] if c in df.columns), None)
+
+                    series_col = next((c for c in ['SctySrs', 'SERIES'] if c in df.columns), None)
+
+                    
+
+                    # टर्नओवर के लिए कॉलम (TtlTrfVal)
+
+                    turnover_col = next((c for c in ['TtlTrfVal', 'TtlTrdVal', 'TURNOVER_LACS', 'TURNOVER'] if c in df.columns), None)
+
+                    
+
+                    if not all([sym_col, close_col, turnover_col]):
+
+                        return None
+
+                    
+
+                    if series_col:
+
+                        df = df[df[series_col].astype(str).str.strip() == 'EQ']
+
+                    
+
+                    filter_keywords = 'BEES|ETF|GOLD|LIQUID'
+
+                    df = df[~df[sym_col].astype(str).str.contains(filter_keywords, case=False, na=False)]
+
+                    
+
+                    df[turnover_col] = pd.to_numeric(df[turnover_col], errors='coerce')
+
+                    df = df.dropna(subset=[turnover_col])
+
+                    
+
+                    # टर्नओवर के आधार पर टॉप 250
+
+                    df_top = df.sort_values(by=turnover_col, ascending=False).head(250)
+
+                    return df_top[[sym_col, turnover_col, close_col]].values.tolist()
+
+        return None
+
+    except Exception as e:
+
+        return None
 
 
-def main():
-    if len(sys.argv) != 3:
-        print("Usage: python update_sheet.py /path/to/file.xlsx <Apps Script URL>")
-        sys.exit(1)
 
-    path = sys.argv[1]
-    apps_url = sys.argv[2]
+# 3. Execution Logic (7-Day Lookback)
 
-    csv_text = excel_first_sheet_to_csv_text(path)
-    print(f"Converted '{path}' -> {len(csv_text.splitlines())} CSV lines. Posting to Apps Script...")
-    resp = post_csv(apps_url, csv_text)
-    print("Response from Apps Script:", resp)
+date = datetime.now()
+
+data_to_insert = None
+
+fetched_date_str = ""
 
 
-if __name__ == "__main__":
-    main()
+
+for i in range(7): 
+
+    test_date = date - timedelta(days=i)
+
+    if test_date.weekday() >= 5: continue
+
+        
+
+    data_to_insert = fetch_bhavcopy_for_date(test_date)
+
+    
+
+    if data_to_insert:
+
+        fetched_date_str = test_date.strftime('%d-%b-%Y')
+
+        break
+
+
+
+# 4. Update Sheet
+
+if data_to_insert:
+
+    try:
+
+        worksheet.batch_clear(['A2:C251'])
+
+        worksheet.update('A2', data_to_insert)
+
+        ist_now = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%d-%b %H:%M')
+
+        status_msg = f"Data Date: {fetched_date_str} | Last Update: {ist_now} (IST)"
+
+        worksheet.update('K2', [[status_msg]])
+
+        print(f"SUCCESS: Turnover Sheet Updated successfully for {fetched_date_str}!")
+
+    except Exception as e:
+
+        print(f"Google Sheet Error: {str(e)}")
+
+else:
+
+
+    print("FAILED: पिछले 7 दिनों में से किसी भी दिन की फाइल नहीं मिली।")
+
